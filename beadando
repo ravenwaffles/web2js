@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bomberman Game</title>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+
+        #game-container {
+            display: flex;
+            justify-content: space-between;
+            width: 1680px;
+            padding: 20px;
+        }
+
+        #map {
+            width: 50%;
+            height: 840px;
+        }
+
+        #tutorial {
+            width: 50%;
+            padding: 50px;
+        }
+
+        canvas {
+            border: 2px solid black;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="game-container">
+        <div id="map">
+            <canvas id="gameCanvas" width="840" height="840"></canvas>
+            <script>
+
+                // To Do:
+                // 1. animate explosion //done
+                // 2. health system and taking damage //done - needs a bit of fixing //DONE
+                // 3. upgrades //next up ... in progress... DONE! - ai needs fixing //DONE
+                // 4. constant movement speed when holding down the key //not sure
+                // 5. upgrade ai //done... kinda
+
+
+                //------------------------------------------------------------------------------------------------------------------------------------VARIABLES AND OBJECTS AND MAP INITIALIZATION AND STUFFSIES
+                const canvas = document.getElementById("gameCanvas");
+                const ctx = canvas.getContext("2d");
+                const gridSize = 40;
+                const numRows = 21;
+                const numCols = 21;
+                const playerSize = gridSize;
+                const wallSize = gridSize;
+                const bombSize = gridSize;
+                const bombTimer = 3100; // milliseconds
+                let win = false;
+                let lose = false;
+                let asd = false;
+
+                const UpgradeTypes = {
+                    BOMB_LIMIT: "BOMB_LIMIT",
+                    EXPLOSION_RANGE: "EXPLOSION_RANGE"
+                };
+
+                const UpgradeDropRates = {
+                    [UpgradeTypes.BOMB_LIMIT]: 0.15, // 15% chance
+                    [UpgradeTypes.EXPLOSION_RANGE]: 0.03 // 3% chance
+                };
+
+                let player = {
+                    x: 0,
+                    y: 0,
+                    health: 3,
+                    bombLimit: 1,
+                    explosionRange: 1,
+                };
+
+                let playerBombs = [];
+
+                // Define AI opponents
+                let opponent = {
+                    x: numCols - 1,
+                    y: numRows - 1,
+                    health: 5,
+                    bombLimit: 1,
+                    explosionRange: 1,
+                }
+
+                let opponentBombs = [];
+
+                let bombs = [];
+                let explodedTiles = [];
+                let limitUpgradesOnMap = [];
+                let reachUpgradesOnMap = [];
+
+                const MapEntities = {
+                    EMPTY: 0,
+                    DESTRUCTIBLE_BLOCK: 1,
+                    INDESTRUCTIBLE_BLOCK: 2,
+                    BOMB_LIMIT_UPGRADE: 3,
+                    EXPLOSION_RANGE_UPGRADE: 4
+                };
+
+                let map = [];
+
+
+                for (let y = 0; y < numRows; y++) {
+                    map[y] = [];
+                    for (let x = 0; x < numCols; x++) {
+                        map[y][x] = MapEntities.EMPTY; // Initialize with EMPTY for default
+                    }
+                }
+
+                // Generate indestructible blocks in a chessboard pattern
+                let indestructibleBlocks = [];
+                for (let x = 1; x < numCols - 1; x++) {
+                    for (let y = 1; y < numRows - 1; y++) {
+                        // Check if both x and y are odd
+                        if (x % 2 === 1 && y % 2 === 1) {
+                            map[y][x] = MapEntities.INDESTRUCTIBLE_BLOCK;
+                            indestructibleBlocks.push({ x: x, y: y });
+                        } else {
+                            map[y][x] = MapEntities.EMPTY;
+                        }
+                    }
+                }
+
+
+
+                // Generate destructible blocks in remaining empty cells
+                let destructibleBlocks = [];
+                for (let x = 0; x < numCols; x++) {
+                    for (let y = 0; y < numRows; y++) {
+                        if (map[y][x] === MapEntities.EMPTY) {
+                            map[y][x] = MapEntities.DESTRUCTIBLE_BLOCK;
+                            destructibleBlocks.push({ x: x, y: y });
+                        }
+                    }
+                }
+
+                // Place destructible blocks on the map
+                destructibleBlocks.forEach(block => {
+                    map[block.y][block.x] = MapEntities.DESTRUCTIBLE_BLOCK;
+                });
+
+                // Place indestructible blocks on the map
+                indestructibleBlocks.forEach(block => {
+                    map[block.y][block.x] = MapEntities.INDESTRUCTIBLE_BLOCK;
+                });
+
+                // Remove destructible blocks in 3x3 areas in each corner
+                for (let i = 0; i < 3; i++) {
+                    for (let j = 0; j < 3; j++) {
+                        destructibleBlocks = destructibleBlocks.filter(block => !(block.x === i && block.y === j)); // Top-left corner
+                        destructibleBlocks = destructibleBlocks.filter(block => !(block.x === numCols - 1 - i && block.y === j)); // Top-right corner
+                        destructibleBlocks = destructibleBlocks.filter(block => !(block.x === i && block.y === numRows - 1 - j)); // Bottom-left corner
+                        destructibleBlocks = destructibleBlocks.filter(block => !(block.x === numCols - 1 - i && block.y === numRows - 1 - j)); // Bottom-right corner
+                    }
+                }
+
+
+                //-----------------------------------------------------------------------------------------------------------------------------------------H(ANDLE OPPON)ENT AI (and bomb placement)
+
+
+                // Function to handle AI opponent actions
+                function handleOpponents() {
+
+                    const possibleMoves = [
+                        { dx: 0, dy: -1 }, // Up
+                        { dx: 0, dy: 1 },  // Down
+                        { dx: -1, dy: 0 }, // Left
+                        { dx: 1, dy: 0 }   // Right
+                    ];
+
+                    // Evaluate possible moves
+                    const validMoves = possibleMoves.filter(move => {
+                        const nextX = opponent.x + move.dx;
+                        const nextY = opponent.y + move.dy;
+                        //console.log("Next position:", nextX, nextY, numCols, numRows);
+
+                        // Check if the next position is within bounds and not occupied
+                        return (
+                            nextX >= 0 &&
+                            nextX < numCols &&
+                            nextY >= 0 &&
+                            nextY < numRows &&
+                            !destructibleBlocks.some(block => block.x === nextX && block.y === nextY) &&
+                            !indestructibleBlocks.some(block => block.x === nextX && block.y === nextY) &&
+                            !(nextX === player.x && nextY === player.y) &&
+                            !bombs.some(block => block.x === nextX && block.y === nextY) &&
+                            !isExplodingBomb(nextX, nextY)
+                        );
+                    });
+
+                    if (validMoves.length > 0) {
+                        // Choose a valid move randomly or based on a heuristic
+                        const randomMove = validMoves[Math.floor(Math.random() * validMoves.length)];
+                        opponent.x += randomMove.dx;
+                        opponent.y += randomMove.dy;
+
+                        // Check if the opponent should place a bomb
+                        if (Math.random() < 0.5) { // Adjust bomb placement frequency
+                            // Place bomb near destructible blocks if possible
+                            placeBombNearDestructible();
+                        }
+                    }
+
+                    // Check if the opponent's new position is on an upgrade
+                    const currentBlock = map[opponent.y][opponent.x];
+                    if (currentBlock === UpgradeTypes.BOMB_LIMIT) {
+                        // Pick up bomb limit upgrade
+                        opponent.bombLimit++;
+                        //console.log("Oh no! The opponent has picked up bomb limit upgrade! New bomb limit: " + opponent.bombLimit);
+                        // Remove the upgrade from the map
+                        map[opponent.y][opponent.x] = 0;
+                    } else if (currentBlock === UpgradeTypes.EXPLOSION_RANGE) {
+                        // Pick up explosion range upgrade
+                        opponent.explosionRange++;
+                        //console.log("Oh no! The opponent has picked up explosion range upgrade! New explosion range: " + opponent.explosionRange);
+                        // Remove the upgrade from the map
+                        map[opponent.y][opponent.x] = 0;
+                    }
+
+                    //console.log("Bomb position:", opponent.x, opponent.y);
+                }
+
+                // Function to check if a position is occupied by an exploding bomb
+                function isExplodingBomb(x, y) {
+                    return bombs.some(bomb => bomb.x === x && bomb.y === y && bomb.timer > 0);
+                }
+
+                // Function to place opponent bomb
+                function placeBombNearDestructible() {
+                    const bombRange = opponent.explosionRange;
+
+                    // Iterate over possible directions (up, down, left, right)
+                    const directions = [
+                        { dx: 1, dy: 0 },   // Right
+                        { dx: -1, dy: 0 },  // Left
+                        { dx: 0, dy: 1 },   // Down
+                        { dx: 0, dy: -1 }   // Up
+                    ];
+
+                    // Check adjacent positions in each direction
+                    for (const dir of directions) {
+                        for (let i = 1; i <= bombRange; i++) {
+                            const posX = opponent.x + dir.dx * i;
+                            const posY = opponent.y + dir.dy * i;
+
+                            // Check if the position is within bounds
+                            if (posX >= 0 && posX < numCols && posY >= 0 && posY < numRows) {
+                                // Check if the position corresponds to a destructible block
+                                if (destructibleBlocks.some(block => block.x === posX && block.y === posY)) {
+                                    // Place bomb adjacent to the destructible block
+                                    placeOpponentBomb(opponent.x, opponent.y);
+                                    return; // Exit after placing one bomb
+                                }
+                            } else {
+                                break; // Stop searching in this direction if out of bounds
+                            }
+                        }
+                    }
+                }
+
+                function placeOpponentBomb(x, y) {
+
+                    // Limit bomb placement
+                    if (opponentBombs.length < opponent.bombLimit) {
+                        // Add bomb to list
+                        opponentBombs.push(1);
+                        bombs.push({ x: x, y: y, timer: bombTimer, entity: "opponent" });
+                    }
+                    //else { console.log("cant place more bombs dear opponent. reached bomb limit: " + opponent.bombLimit - 1) }
+                }
+
+                // Function to handle AI opponent actions periodically
+                setInterval(handleOpponents, 500); // 1 move / 500ms <- adjust this number as needed
+
+                //------------------------------------------------------------------------------------------------------------------------------------------------------------------ DRAWS
+
+                function drawPlayer() {
+                    // Draw player
+                    ctx.fillStyle = "green";
+                    ctx.fillRect(player.x * gridSize, player.y * gridSize, playerSize, playerSize);
+                }
+
+                function drawOpponents() {
+                    // Draw opponents
+                    ctx.fillStyle = "blue";
+                    ctx.fillRect(opponent.x * playerSize, opponent.y * playerSize, playerSize, playerSize);
+                }
+
+                function drawIndestructibleBlocks() {
+                    ctx.fillStyle = "black";
+                    // Draw indestructible blocks
+                    indestructibleBlocks.forEach(block => {
+                        ctx.fillRect(block.x * gridSize, block.y * gridSize, wallSize, wallSize);
+                    });
+                }
+
+                function drawDestructibleBlocks() {
+                    ctx.fillStyle = "gray";
+                    // Draw destructible blocks
+                    destructibleBlocks.forEach(block => {
+                        ctx.fillRect(block.x * gridSize, block.y * gridSize, wallSize, wallSize);
+                    });
+                }
+
+                function drawBombs() {
+                    ctx.fillStyle = "red";
+                    // Draw bombs (if any)
+                    bombs.forEach(bomb => {
+                        ctx.fillRect(bomb.x * gridSize, bomb.y * gridSize, bombSize, bombSize);
+                    });
+                }
+
+                function drawExplosionAnim(bomb) {
+                    // Draw exploded tiles
+                    ctx.fillStyle = "orange";
+                    explodedTiles.forEach(block => {
+                        ctx.fillRect(block.x * gridSize, block.y * gridSize, gridSize, gridSize);
+                    });
+                }
+
+                function drawUpgrades() {
+                    // Iterate through the map and draw upgrades
+                    for (let y = 0; y < numRows; y++) {
+                        for (let x = 0; x < numCols; x++) {
+                            const upgradeType = map[y][x];
+                            if (upgradeType === UpgradeTypes.BOMB_LIMIT) {
+                                // Draw bomb limit upgrade
+                                ctx.fillStyle = "yellow";
+                                ctx.fillRect(x * gridSize, y * gridSize, gridSize, gridSize);
+                            } else if (upgradeType === UpgradeTypes.EXPLOSION_RANGE) {
+                                // Draw explosion range upgrade
+                                ctx.fillStyle = "purple";
+                                ctx.fillRect(x * gridSize, y * gridSize, gridSize, gridSize);
+                            }
+                        }
+                    }
+                }
+
+                function clearCanvas() {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+
+                function draw() {
+                    clearCanvas();
+                    drawPlayer();
+                    drawOpponents();
+                    drawDestructibleBlocks();
+                    drawIndestructibleBlocks();
+                    drawBombs();
+                    drawExplosionAnim();
+                    drawUpgrades();
+                }
+
+
+                // --------------------------------------------------------------------------------------------------------------------------------------------------------PLAYER MOVEMENT AND BOMB PLACEMENT
+
+
+
+                function movePlayer(dx, dy) {
+                    // Calculate new position
+                    const newX = player.x + dx;
+                    const newY = player.y + dy;
+
+                    // Check if new position is within bounds
+                    if (newX >= 0 && newX < numCols && newY >= 0 && newY < numRows) {
+                        // Check if new position is not occupied by a wall, indestructible block, or destructible block
+                        if (
+                            !indestructibleBlocks.some(block => block.x === newX && block.y === newY) &&
+                            !destructibleBlocks.some(block => block.x === newX && block.y === newY) &&
+                            !(newX === opponent.x && newY === opponent.y) &&
+                            !bombs.some(block => block.x === newX && block.y === newY)) {
+                            // Move the player
+                            player.x = newX;
+                            player.y = newY;
+                            //console.log(newX);
+                            //console.log(newY);
+                            //console.log(explodedTiles);
+                            if (explodedTiles.some(block => block.x === newX && block.y === newY)) {
+                                //console.log("bitch");
+                                player.health--;
+                                if (player.health <= 0) {
+                                    // Game over
+                                    //console.log("Game Over! You lose!");
+                                }
+                            }
+                        }
+                    }
+
+                    // Check if the player's new position is on an upgrade
+                    const currentBlock = map[player.y][player.x];
+                    if (currentBlock === UpgradeTypes.BOMB_LIMIT) {
+                        // Pick up bomb limit upgrade
+                        player.bombLimit++;
+                        //console.log("Picked up bomb limit upgrade! New bomb limit: " + player.bombLimit);
+                        // Remove the upgrade from the map
+                        map[player.y][player.x] = 0;
+                    } else if (currentBlock === UpgradeTypes.EXPLOSION_RANGE) {
+                        // Pick up explosion range upgrade
+                        player.explosionRange++;
+                        //console.log("Picked up explosion range upgrade! New explosion range: " + player.explosionRange);
+                        // Remove the upgrade from the map
+                        map[player.y][player.x] = 0;
+                    }
+
+                    // Redraw canvas
+                    draw();
+                }
+
+                function placeBomb() {
+
+                    // Limit bomb placement
+                    if (playerBombs.length < player.bombLimit) {
+                        // Add bomb to list
+                        playerBombs.push(1);
+                        bombs.push({ x: player.x, y: player.y, timer: bombTimer, entity: "player" });
+                    }
+                }
+
+
+                //-----------------------------------------------------------------------------------------------------------------------------------------BOMB EXPLOSION HANDLING
+
+
+
+
+                function explodeBomb(bomb) {
+
+                    // Add exploded tiles at the bomb's position
+                    explodedTiles.push({ x: bomb.x, y: bomb.y });
+
+                    // Determine the explosion range based on the entity (player or opponent)
+                    let explosionRange = 0;
+                    if (bomb.entity === "player") {
+                        explosionRange = player.explosionRange;
+                        //console.log(explosionRange)
+                    }
+                    else {
+                        explosionRange = opponent.explosionRange;
+                        //console.log(0-explosionRange)
+                    }
+
+                    // Remove a bomb from the list
+                    if (bomb.entity === "player") {
+                        playerBombs.shift();
+                    }
+                    else { opponentBombs.shift(); }
+
+                    for (let dx = 1; dx <= explosionRange; dx++) {
+                        const leftX = bomb.x - dx;
+
+                        // Check for indestructible blocks
+                        if (leftX >= 0 && !indestructibleBlocks.some(block => block.x === leftX && block.y === bomb.y)) {
+                            explodedTiles.push({ x: leftX, y: bomb.y });
+                            // Stop the explosion if a destructible block is encountered
+                            if (destructibleBlocks.some(block => block.x === leftX && block.y === bomb.y)) {
+                                destructibleBlocks = destructibleBlocks.filter(block => !(block.x === leftX && block.y === bomb.y));
+                                const destrucibleIndex = destructibleBlocks.findIndex(block => block.x === leftX && block.y === bomb.y);
+                                if (destrucibleIndex > -1) {
+                                    destructibleBlocks.splice(destrucibleIndex, 1);
+                                }
+                                const droppedUpgrade = dropUpgrade({ x: leftX, y: bomb.y });
+                                //console.log(droppedUpgrade)
+                                if (droppedUpgrade === UpgradeTypes["BOMB_LIMIT"]) {
+                                    limitUpgradesOnMap.push({ x: leftX, y: bomb.y });
+                                }
+                                if (droppedUpgrade === UpgradeTypes["EXPLOSION_RANGE"]) {
+                                    reachUpgradesOnMap.push({ x: leftX, y: bomb.y });
+                                }
+                                break;
+                            }
+                        } else {
+                            // If an indestructible block is encountered, stop the explosion in this direction
+                            break;
+                        }
+                    }
+
+                    for (let dx = 1; dx <= explosionRange; dx++) {
+                        const rightX = bomb.x + dx;
+
+                        if (rightX < numCols && !indestructibleBlocks.some(block => block.x === rightX && block.y === bomb.y)) {
+                            explodedTiles.push({ x: rightX, y: bomb.y });
+                            // Stop the explosion if a destructible block is encountered
+                            if (destructibleBlocks.some(block => block.x === rightX && block.y === bomb.y)) {
+                                destructibleBlocks = destructibleBlocks.filter(block => !(block.x === rightX && block.y === bomb.y));
+                                const destrucibleIndex = destructibleBlocks.findIndex(block => block.x === rightX && block.y === bomb.y);
+                                if (destrucibleIndex > -1) {
+                                    destructibleBlocks.splice(destrucibleIndex, 1);
+                                }
+                                const droppedUpgrade = dropUpgrade({ x: rightX, y: bomb.y });
+                                //console.log(droppedUpgrade)
+                                if (droppedUpgrade === UpgradeTypes["BOMB_LIMIT"]) {
+                                    limitUpgradesOnMap.push({ x: rightX, y: bomb.y });
+                                }
+                                if (droppedUpgrade === UpgradeTypes["EXPLOSION_RANGE"]) {
+                                    reachUpgradesOnMap.push({ x: rightX, y: bomb.y });
+                                }
+                                break;
+                            }
+                        } else {
+                            // If an indestructible block is encountered, stop the explosion in this direction
+                            break;
+                        }
+                    }
+
+                    // Add exploded tiles vertically (up and down)
+                    for (let dy = 1; dy <= explosionRange; dy++) {
+                        const upY = bomb.y - dy;
+
+                        // Check for indestructible blocks
+                        if (upY >= 0 && !indestructibleBlocks.some(block => block.x === bomb.x && block.y === upY)) {
+                            explodedTiles.push({ x: bomb.x, y: upY });
+                            // Stop the explosion if a destructible block is encountered
+                            if (destructibleBlocks.some(block => block.x === bomb.x && block.y === upY)) {
+                                destructibleBlocks = destructibleBlocks.filter(block => !(block.x === bomb.x && block.y === upY));
+                                const destrucibleIndex = destructibleBlocks.findIndex(block => block.x === bomb.x && block.y === upY);
+                                if (destrucibleIndex > -1) {
+                                    destructibleBlocks.splice(destrucibleIndex, 1);
+                                }
+                                const droppedUpgrade = dropUpgrade({ x: bomb.x, y: upY });
+                                //console.log(droppedUpgrade)
+                                if (droppedUpgrade === UpgradeTypes["BOMB_LIMIT"]) {
+                                    limitUpgradesOnMap.push({ x: bomb.x, y: upY });
+                                }
+                                if (droppedUpgrade === UpgradeTypes["EXPLOSION_RANGE"]) {
+                                    reachUpgradesOnMap.push({ x: bomb.x, y: upY });
+                                }
+                                break;
+                            }
+                        } else {
+                            // If an indestructible block is encountered, stop the explosion in this direction
+                            break;
+                        }
+                    }
+
+                    for (let dy = 1; dy <= explosionRange; dy++) {
+                        const downY = bomb.y + dy;
+
+                        if (downY < numRows && !indestructibleBlocks.some(block => block.x === bomb.x && block.y === downY)) {
+                            explodedTiles.push({ x: bomb.x, y: downY });
+                            // Stop the explosion if a destructible block is encountered
+                            if (destructibleBlocks.some(block => block.x === bomb.x && block.y === downY)) {
+                                destructibleBlocks = destructibleBlocks.filter(block => !(block.x === bomb.x && block.y === downY));
+                                const destrucibleIndex = destructibleBlocks.findIndex(block => block.x === bomb.x && block.y === downY);
+                                if (destrucibleIndex > -1) {
+                                    destructibleBlocks.splice(destrucibleIndex, 1);
+                                }
+                                const droppedUpgrade = dropUpgrade({ x: bomb.x, y: downY });
+                                //console.log(droppedUpgrade)
+                                if (droppedUpgrade === UpgradeTypes["BOMB_LIMIT"]) {
+                                    limitUpgradesOnMap.push({ x: bomb.x, y: downY });
+                                }
+                                if (droppedUpgrade === UpgradeTypes["EXPLOSION_RANGE"]) {
+                                    reachUpgradesOnMap.push({ x: bomb.x, y: downY });
+                                }
+                                break;
+                            }
+                        } else {
+                            // If an indestructible block is encountered, stop the explosion in this direction
+                            break;
+                        }
+                    }
+
+                    const isPlayerHit = isCharacterHitByExplosion(player, bomb, player.explosionRange, indestructibleBlocks)
+                    const isOpponentHit = isCharacterHitByExplosion(opponent, bomb, opponent.explosionRange, indestructibleBlocks)
+
+                    if (isPlayerHit) {
+                        player.health--;
+                        if (player.health <= 0) {
+                            lose = true;
+                            //console.log("Game over! You lose!")
+                        }
+                    }
+
+                    if (isOpponentHit) {
+                        opponent.health--;
+                        //console.log("-1")
+                        if (opponent.health <= 0) {
+                            win = true;
+                            //console.log("You win!")
+                        }
+                    }
+
+                    //console.log("exploded tiles are", explodedTiles);
+
+                    // Schedule removal of exploded tiles after delay
+                    setTimeout(() => {
+                        explodedTiles = [];
+                    }, 750); // 750 milliseconds delay
+                    //console.log("exploded tiles are", explodedTiles);
+
+                    // Remove exploded bomb
+                    bombs.splice(bombs.indexOf(bomb), 1);
+
+                    //console.log(destructibleBlocks);
+                }
+
+
+                function isCharacterHitByExplosion(character, bomb, explosionRange, indestructibleBlocks) {
+                    const bombX = bomb.x;
+                    const bombY = bomb.y;
+
+                    // Check horizontal explosion range
+                    for (let x = bombX - explosionRange; x <= bombX + explosionRange; x++) {
+                        if (x === character.x && bombY === character.y) {
+                            // Check for obstacles in the explosion path
+                            for (let obstacleX = bombX; obstacleX !== x; obstacleX += Math.sign(x - bombX)) {
+                                if (indestructibleBlocks.some(block => block.x === obstacleX && block.y === bombY)) {
+                                    return false; // Obstacle blocks the explosion
+                                }
+                            }
+                            return true; // Character is hit by explosion horizontally
+                        }
+                    }
+
+                    // Check vertical explosion range
+                    for (let y = bombY - explosionRange; y <= bombY + explosionRange; y++) {
+                        if (y === player.y && bombX === player.x) {
+                            // Check for obstacles in the explosion path
+                            for (let obstacleY = bombY; obstacleY !== y; obstacleY += Math.sign(y - bombY)) {
+                                if (indestructibleBlocks.some(block => block.x === bombX && block.y === obstacleY)) {
+                                    return false; // Obstacle blocks the explosion
+                                }
+                            }
+                            return true; // Player is hit by explosion vertically
+                        }
+                    }
+
+                    return false; // Player is not hit by explosion
+                }
+
+                //-----------------------------------------------------------------------------------------------------------------------------------------------------DROP UPGRADE
+
+
+                // Function to handle item drops from destructible blocks
+                function dropUpgrade(block) {
+                    const randomNumber = Math.random();
+                    let droppedUpgrade = null;
+
+                    // Check if an upgrade should drop based on its drop rate
+                    Object.entries(UpgradeDropRates).forEach(([upgradeType, dropRate]) => {
+                        if (randomNumber <= dropRate) {
+                            // An upgrade of this type drops
+                            droppedUpgrade = upgradeType;
+                        }
+                    });
+
+                    if (droppedUpgrade) {
+                        map[block.y][block.x] = droppedUpgrade;
+                    }
+
+                    // Return the dropped upgrade type (or null if no upgrade dropped)
+                    return droppedUpgrade;
+                }
+
+
+                //------------------------------------------------------------------------------------------------------------------------------------------------------GAME FUNCTION
+
+
+                function updateBombs(deltaTime) {
+                    bombs.forEach(bomb => {
+                        bomb.timer -= deltaTime;
+                        if (bomb.timer <= 0) {
+                            explodeBomb(bomb);
+                        }
+                    });
+                }
+
+                function checkGameOver(lose, win) {
+                    if (!asd) {
+                        if (win) {
+                            displayMessage("Congratulations! You won!")
+                            asd = true;
+                        }
+
+                        if (lose) {
+                            displayMessage("Game over! Better luck next time!")
+                            asd = true;
+                        }
+                    }
+                }
+
+                function displayMessage(message) {
+                    alert(message);
+                }
+
+                function gameLoop(timestamp) {
+                    const deltaTime = timestamp - lastTimestamp;
+                    lastTimestamp = timestamp;
+
+                    if (win || lose) {
+                        checkGameOver(lose, win);
+                    }
+
+                    if (!asd) {
+                        requestAnimationFrame(gameLoop);
+                        updateBombs(deltaTime);
+                        draw();
+                    }
+                }
+
+                let lastTimestamp = 0;
+                requestAnimationFrame(gameLoop);
+
+                window.addEventListener("keydown", event => {
+                    switch (event.key) {
+                        case "ArrowUp":
+                            movePlayer(0, -1);
+                            break;
+                        case "ArrowDown":
+                            movePlayer(0, 1);
+                            break;
+                        case "ArrowLeft":
+                            movePlayer(-1, 0);
+                            break;
+                        case "ArrowRight":
+                            movePlayer(1, 0);
+                            break;
+                        case " ":
+                            placeBomb();
+                            break;
+                    }
+                });
+            </script>
+        </div>
+        <div id="tutorial">
+            <h2>Tutorial</h2>
+            <p>Welcome to a Bomberman game!</p>
+            <p>Your objective is to blow up your opponent and win the game! You have <b>3</b> health points, your
+                opponent has <b>5</b>, and <b>standing in an explosion makes you lose 1 health</b>.
+            <p>You start from the top left corner, and your opponent starts from the bottom right. Use the <b>arrow
+                    keys</b> to move around on the map, and place bombs
+                using your <b>spacebar</b> to destroy the <b>gray</b> destructible blocks and unlock upgrades that drop
+                from them.</p>
+            <p>The <b>yellow</b> upgrades give you an <b>extra permanent bomb</b> to use, and the <b>purple</b> upgrades
+                give your bombs an <b>extra range</b>. Your bomb limit and explosion range
+                are both set to 1 blocks by default.</p>
+            <p><b>Black</b> blocks are <b>indestructible walls</b> you can use to your advantage.</p>
+            </p>
+        </div>
+</body>
+
+</html>
